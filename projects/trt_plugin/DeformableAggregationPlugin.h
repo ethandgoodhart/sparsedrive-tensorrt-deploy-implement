@@ -1,56 +1,95 @@
 #pragma once
 #include "NvInfer.h"
-#include <vector>
+#include "NvInferRuntime.h"
+#include "NvInferRuntimePlugin.h"
+#include "NvInferPluginBase.h"
 #include <string>
 
 namespace nvinfer1 {
 
-class DeformableAggregationPlugin : public IPluginV2DynamicExt {
+class DeformableAggregationPlugin : public IPluginV3,
+                                    public IPluginV3OneCore,
+                                    public IPluginV3OneBuild,
+                                    public IPluginV3OneRuntime {
 public:
     DeformableAggregationPlugin() = default;
-    DeformableAggregationPlugin(const void* data, size_t length); 
+    ~DeformableAggregationPlugin() override = default;
 
-    // IPluginV2DynamicExt 
-    int getNbOutputs() const noexcept override { return 1; }
-    DimsExprs getOutputDimensions(int outputIndex, const DimsExprs* inputs, int nbInputs, IExprBuilder& exprBuilder) noexcept override;
-    bool supportsFormatCombination(int pos, const PluginTensorDesc* inOut, int nbInputs, int nbOutputs) noexcept override;
-    void configurePlugin(const DynamicPluginTensorDesc* in, int nbInputs, const DynamicPluginTensorDesc* out, int nbOutputs) noexcept override;
-    size_t getWorkspaceSize(const PluginTensorDesc* inputs, int nbInputs, const PluginTensorDesc* outputs, int nbOutputs) const noexcept override { return 0; }
-    int enqueue(const PluginTensorDesc* inputDesc, const PluginTensorDesc* outputDesc, const void* const* inputs, void* const* outputs, void* workspace, cudaStream_t stream) noexcept override;
+    // IPluginV3
+    IPluginCapability* getCapabilityInterface(PluginCapabilityType type) noexcept override;
+    IPluginV3* clone() noexcept override;
 
-    // IPluginV2 
-    const char* getPluginType() const noexcept override { return "DeformableAggregation"; }
-    const char* getPluginVersion() const noexcept override { return "1"; }
-    void destroy() noexcept override { delete this; }
-    IPluginV2DynamicExt* clone() const noexcept override { return new DeformableAggregationPlugin(*this); }
-    void setPluginNamespace(const char* pluginNamespace) noexcept override { mNamespace = pluginNamespace; }
-    const char* getPluginNamespace() const noexcept override { return mNamespace.c_str(); }
-    DataType getOutputDataType(int index, const DataType* inputTypes, int nbInputs) const noexcept override { return inputTypes[0]; }
-    
-    // 序列化
-    size_t getSerializationSize() const noexcept override { return 0; }
-    void serialize(void* buffer) const noexcept override {}
-    void terminate() noexcept override {}
-    int initialize() noexcept override { return 0; }
+    // IPluginV3OneCore
+    AsciiChar const* getPluginName() const noexcept override { return "DeformableAggregation"; }
+    AsciiChar const* getPluginVersion() const noexcept override { return "1"; }
+    AsciiChar const* getPluginNamespace() const noexcept override { return mNamespace.c_str(); }
+    void setPluginNamespace(AsciiChar const* ns) noexcept { mNamespace = ns ? ns : ""; }
+
+    // IPluginV3OneBuild
+    int32_t getNbOutputs() const noexcept override { return 1; }
+
+    int32_t configurePlugin(DynamicPluginTensorDesc const* /*in*/, int32_t /*nbInputs*/,
+                            DynamicPluginTensorDesc const* /*out*/, int32_t /*nbOutputs*/) noexcept override {
+        return 0;
+    }
+
+    int32_t getOutputDataTypes(DataType* outputTypes, int32_t nbOutputs,
+                               DataType const* inputTypes, int32_t nbInputs) const noexcept override;
+
+    int32_t getOutputShapes(DimsExprs const* inputs, int32_t nbInputs,
+                            DimsExprs const* shapeInputs, int32_t nbShapeInputs,
+                            DimsExprs* outputs, int32_t nbOutputs,
+                            IExprBuilder& exprBuilder) noexcept override;
+
+    bool supportsFormatCombination(int32_t pos, DynamicPluginTensorDesc const* inOut,
+                                   int32_t nbInputs, int32_t nbOutputs) noexcept override;
+
+    size_t getWorkspaceSize(DynamicPluginTensorDesc const* inputs, int32_t nbInputs,
+                            DynamicPluginTensorDesc const* outputs, int32_t nbOutputs) const noexcept override;
+
+    // IPluginV3OneRuntime
+    int32_t onShapeChange(PluginTensorDesc const* /*in*/, int32_t /*nbInputs*/,
+                          PluginTensorDesc const* /*out*/, int32_t /*nbOutputs*/) noexcept override {
+        return 0;
+    }
+
+    int32_t enqueue(PluginTensorDesc const* inputDesc, PluginTensorDesc const* outputDesc,
+                    void const* const* inputs, void* const* outputs,
+                    void* workspace, cudaStream_t stream) noexcept override;
+
+    IPluginV3* attachToContext(IPluginResourceContext* /*context*/) noexcept override {
+        return clone();
+    }
+
+    PluginFieldCollection const* getFieldsToSerialize() noexcept override {
+        mFCToSerialize.nbFields = 0;
+        mFCToSerialize.fields = nullptr;
+        return &mFCToSerialize;
+    }
 
 private:
     std::string mNamespace;
+    PluginFieldCollection mFCToSerialize{};
 };
 
-class DeformableAggregationPluginCreator : public IPluginCreator {
+class DeformableAggregationPluginCreator : public IPluginCreatorV3One {
 public:
     DeformableAggregationPluginCreator();
-    const char* getPluginName() const noexcept override { return "DeformableAggregation"; }
-    const char* getPluginVersion() const noexcept override { return "1"; }
-    const PluginFieldCollection* getFieldNames() noexcept override { return &mFC; }
-    IPluginV2* createPlugin(const char* name, const PluginFieldCollection* fc) noexcept override;
-    IPluginV2* deserializePlugin(const char* name, const void* serialData, size_t serialLength) noexcept override;
-    void setPluginNamespace(const char* pluginNamespace) noexcept override { mNamespace = pluginNamespace; }
-    const char* getPluginNamespace() const noexcept override { return mNamespace.c_str(); }
+    ~DeformableAggregationPluginCreator() override = default;
+
+    AsciiChar const* getPluginName() const noexcept override { return "DeformableAggregation"; }
+    AsciiChar const* getPluginVersion() const noexcept override { return "1"; }
+    PluginFieldCollection const* getFieldNames() noexcept override { return &mFC; }
+
+    IPluginV3* createPlugin(AsciiChar const* name, PluginFieldCollection const* fc,
+                            TensorRTPhase phase) noexcept override;
+
+    AsciiChar const* getPluginNamespace() const noexcept override { return mNamespace.c_str(); }
+    void setPluginNamespace(AsciiChar const* ns) noexcept { mNamespace = ns ? ns : ""; }
 
 private:
+    PluginFieldCollection mFC{};
     std::string mNamespace;
-    PluginFieldCollection mFC;
 };
 
 } // namespace nvinfer1

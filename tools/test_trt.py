@@ -22,7 +22,6 @@ from mmdet.datasets import build_dataloader as build_dataloader_origin
 from mmdet.models import build_detector
 
 # 💡 核心导入：激活 MMDetection3D 和 SparseDrive 注册表
-import mmdet3d
 import projects.mmdet3d_plugin
 
 # ==============================================================================
@@ -39,9 +38,13 @@ class TRTInfer:
             raise RuntimeError("Failed to create TensorRT context.")
 
         self.inputs, self.outputs, self.bindings = OrderedDict(), OrderedDict(), []
-        
-        for i in range(self.engine.num_bindings):
-            if hasattr(self.engine, 'get_tensor_name'):
+        self._tensor_names = []
+
+        use_v3 = hasattr(self.engine, 'num_io_tensors')
+        n = self.engine.num_io_tensors if use_v3 else self.engine.num_bindings
+
+        for i in range(n):
+            if use_v3:
                 name = self.engine.get_tensor_name(i)
                 shape = self.engine.get_tensor_shape(name)
                 is_input = (self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT)
@@ -51,22 +54,32 @@ class TRTInfer:
                 shape = self.engine.get_binding_shape(i)
                 is_input = self.engine.binding_is_input(i)
                 dtype = trt.nptype(self.engine.get_binding_dtype(i))
-            
+
             shape = [s if s > 0 else 1 for s in shape]
             torch_dtype = torch.from_numpy(np.empty(0, dtype=dtype)).dtype
             gpu_mem = torch.empty(tuple(shape), dtype=torch_dtype, device='cuda')
             self.bindings.append(gpu_mem.data_ptr())
-            
+            self._tensor_names.append(name)
+
             if is_input:
                 self.inputs[name] = gpu_mem
             else:
                 self.outputs[name] = gpu_mem
 
+        self._use_v3 = use_v3
+        if use_v3:
+            for name, mem in {**self.inputs, **self.outputs}.items():
+                self.context.set_tensor_address(name, mem.data_ptr())
+            self._stream = torch.cuda.current_stream().cuda_stream
+
     def infer(self, feed_dict):
         for name, data in feed_dict.items():
             if name in self.inputs:
                 self.inputs[name].copy_(data.to(self.inputs[name].dtype).contiguous())
-        self.context.execute_v2(self.bindings)
+        if self._use_v3:
+            self.context.execute_async_v3(self._stream)
+        else:
+            self.context.execute_v2(self.bindings)
         return {name: mem.clone() for name, mem in self.outputs.items()}
 
 # ==============================================================================
@@ -126,7 +139,14 @@ def trt_cascade_engine_test(model,
     prev_global_mat = None
     prev_time = None
 
+    import time as _time
+    _phase = {'data': 0.0, 'pre': 0.0, 'perc': 0.0, 'mid': 0.0, 'mo': 0.0, 'post': 0.0, 'n': 0}
+    _t_prev = _time.perf_counter()
+
     for i, data in enumerate(data_loader):
+        torch.cuda.synchronize()
+        _t0 = _time.perf_counter()
+        _phase['data'] += _t0 - _t_prev
         with torch.no_grad():
             scattered_data = scatter(data, [torch.cuda.current_device()])[0]
             img = scattered_data['img']
@@ -176,10 +196,14 @@ def trt_cascade_engine_test(model,
                 'prev_map_conf': history_map['prev_confidence'],
             }
 
+            torch.cuda.synchronize(); _t1 = _time.perf_counter()
+            _phase['pre'] += _t1 - _t0
             if is_scene_start:
                 trt_outs_perc = det_map_engine_init.infer(feed_dict_perception)
             else:
                 trt_outs_perc = det_map_engine_temporal.infer(feed_dict_perception)
+            torch.cuda.synchronize(); _t2 = _time.perf_counter()
+            _phase['perc'] += _t2 - _t1
 
             history_det['prev_instance_feature'] = trt_outs_perc['next_det_feat']
             history_det['prev_anchor'] = trt_outs_perc['next_det_anchor']
@@ -206,10 +230,14 @@ def trt_cascade_engine_test(model,
             }
             feed_dict_motion.update(history_motion)
 
+            torch.cuda.synchronize(); _t3 = _time.perf_counter()
+            _phase['mid'] += _t3 - _t2
             if is_scene_start:
                 trt_outs_mo = motion_engine_init.infer(feed_dict_motion)
             else:
                 trt_outs_mo = motion_engine_temporal.infer(feed_dict_motion)
+            torch.cuda.synchronize(); _t4 = _time.perf_counter()
+            _phase['mo'] += _t4 - _t3
 
             history_motion['mo_history_instance_feature'] = trt_outs_mo['next_mo_history_instance_feature']
             history_motion['mo_history_anchor'] = trt_outs_mo['next_mo_history_anchor']
@@ -260,8 +288,18 @@ def trt_cascade_engine_test(model,
             merged_res.update(planning_res_list[0])
             
             results.append({'img_bbox': merged_res, 'pts_bbox': merged_res})
+            torch.cuda.synchronize(); _t5 = _time.perf_counter()
+            _phase['post'] += _t5 - _t4
+            _phase['n'] += 1
         prog_bar.update()
+        _t_prev = _time.perf_counter()
 
+    n = max(_phase['n'], 1)
+    print(f"\n\n⏱️  Per-frame breakdown over {n} frames (ms):")
+    for k in ['data', 'pre', 'perc', 'mid', 'mo', 'post']:
+        print(f"   {k:6s} {_phase[k]*1000/n:7.2f}")
+    total = sum(_phase[k] for k in ['data','pre','perc','mid','mo','post']) * 1000 / n
+    print(f"   total {total:7.2f}  ({1000/total:.2f} FPS)")
     return results
 
 # ==============================================================================

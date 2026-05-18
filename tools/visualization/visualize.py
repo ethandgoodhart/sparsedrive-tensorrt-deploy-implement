@@ -100,7 +100,7 @@ def main():
     visualizer = Visualizer(args, plot_choices)
 
     for idx in tqdm(range(START, END, INTERVAL)):
-        if idx > len(visualizer.results):
+        if idx >= len(visualizer.results):
             break
         visualizer.add_vis(idx)
     

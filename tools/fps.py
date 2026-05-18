@@ -23,7 +23,6 @@ from mmdet.datasets import build_dataset
 from mmdet.datasets import build_dataloader as build_dataloader_origin
 from mmdet.models import build_detector
 
-import mmdet3d
 import projects.mmdet3d_plugin
 
 # ==============================================================================
@@ -40,9 +39,11 @@ class TRTInfer:
             raise RuntimeError("Failed to create TensorRT context.")
 
         self.inputs, self.outputs, self.bindings = OrderedDict(), OrderedDict(), []
-        
-        for i in range(self.engine.num_bindings):
-            if hasattr(self.engine, 'get_tensor_name'):
+        use_v3 = hasattr(self.engine, 'num_io_tensors')
+        n = self.engine.num_io_tensors if use_v3 else self.engine.num_bindings
+
+        for i in range(n):
+            if use_v3:
                 name = self.engine.get_tensor_name(i)
                 shape = self.engine.get_tensor_shape(name)
                 is_input = (self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT)
@@ -52,22 +53,31 @@ class TRTInfer:
                 shape = self.engine.get_binding_shape(i)
                 is_input = self.engine.binding_is_input(i)
                 dtype = trt.nptype(self.engine.get_binding_dtype(i))
-            
+
             shape = [s if s > 0 else 1 for s in shape]
             torch_dtype = torch.from_numpy(np.empty(0, dtype=dtype)).dtype
             gpu_mem = torch.empty(tuple(shape), dtype=torch_dtype, device='cuda')
             self.bindings.append(gpu_mem.data_ptr())
-            
+
             if is_input:
                 self.inputs[name] = gpu_mem
             else:
                 self.outputs[name] = gpu_mem
 
+        self._use_v3 = use_v3
+        if use_v3:
+            for name, mem in {**self.inputs, **self.outputs}.items():
+                self.context.set_tensor_address(name, mem.data_ptr())
+            self._stream = torch.cuda.current_stream().cuda_stream
+
     def infer(self, feed_dict):
         for name, data in feed_dict.items():
             if name in self.inputs:
                 self.inputs[name].copy_(data.to(self.inputs[name].dtype))
-        self.context.execute_v2(self.bindings)
+        if self._use_v3:
+            self.context.execute_async_v3(self._stream)
+        else:
+            self.context.execute_v2(self.bindings)
         return self.outputs
 
 # ==============================================================================

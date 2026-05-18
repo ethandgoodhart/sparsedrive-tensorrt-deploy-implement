@@ -10,16 +10,18 @@ set(CMAKE_CUDA_STANDARD 14)
 # =========================================================
 include_directories(/usr/local/cuda/include)
 
-# 添加系统包含路径 (NvInfer.h)
-include_directories(/usr/include/x86_64-linux-gnu)
+# 添加系统包含路径 (NvInfer.h) — aarch64 (Jetson)
+include_directories(/usr/include/aarch64-linux-gnu)
 
 # 添加库路径
-link_directories(/usr/local/cuda-11.8/targets/x86_64-linux/lib/)
+link_directories(/usr/local/cuda/targets/aarch64-linux/lib/)
+link_directories(/usr/lib/aarch64-linux-gnu)
 
-link_directories(/usr/lib/x86_64-linux-gnu)
+# Target Jetson AGX Thor (Blackwell, sm_110). Must be set BEFORE add_library.
+set(CMAKE_CUDA_ARCHITECTURES 110)
 
-set(SOURCE_FILES 
-    deformable_aggregation_kernel.cu 
+set(SOURCE_FILES
+    deformable_aggregation_kernel.cu
     DeformableAggregationPlugin.cpp
 )
 
@@ -28,5 +30,6 @@ add_library(SparseDrivePlugin SHARED ${SOURCE_FILES})
 # 链接 nvinfer 和 cudart
 target_link_libraries(SparseDrivePlugin nvinfer cudart)
 
-set(CMAKE_CUDA_ARCHITECTURES 75 80 86)
-set_target_properties(SparseDrivePlugin PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(SparseDrivePlugin PROPERTIES
+    CUDA_ARCHITECTURES "110"
+    CUDA_SEPARABLE_COMPILATION ON)

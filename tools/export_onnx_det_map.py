@@ -211,6 +211,7 @@ def main():
             output_names=output_names,
             opset_version=13,
             do_constant_folding=True,
+            dynamo=False,
         )
     simplify_onnx(out_first)
     print("🎉 First-Frame Export finished!")
@@ -242,6 +243,7 @@ def main():
             output_names=output_names,
             opset_version=13,
             do_constant_folding=True,
+            dynamo=False,
         )
     simplify_onnx(args.out)
     print("🎉 Temporal Export finished!")

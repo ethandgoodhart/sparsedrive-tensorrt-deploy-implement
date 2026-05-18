@@ -32,23 +32,9 @@ def build_engine(onnx_file_path, engine_file_path, plugin_path, fp16=False, verb
     config = builder.create_builder_config()
     config.clear_flag(trt.BuilderFlag.TF32)
     if hasattr(config, 'builder_optimization_level'):
-        config.builder_optimization_level = 1
+        config.builder_optimization_level = 5
 
     print(f"Detected TensorRT Version: {trt.__version__}")
-    print("Enabling tactic sources and allowing Myelin for graph fusion...")
-    try:
-        # 获取 TensorRT 默认开启的所有 Tactic（默认包含 Myelin, CUBLAS, CUDNN 等）
-        tactic_sources = config.get_tactic_sources()
-        
-        # 如果你之前遇到过特定引擎崩溃（比如 JIT_CONVOLUTIONS），仅在这里使用黑名单剔除
-        # 对应你之前 onnx2trt.sh 里的 --tacticSources=-JIT_CONVOLUTIONS
-        if "JIT_CONVOLUTIONS" in trt.TacticSource.__members__:
-            tactic_sources &= ~(1 << int(trt.TacticSource.JIT_CONVOLUTIONS))
-            print("Disabled JIT_CONVOLUTIONS via blocklist.")
-            
-        config.set_tactic_sources(tactic_sources)
-    except Exception as e:
-        print(f"Warning: Failed to set tactic sources: {e}")
 
     # 5. 配置显存 (8GB)
     try:
@@ -71,38 +57,22 @@ def build_engine(onnx_file_path, engine_file_path, plugin_path, fp16=False, verb
     # ⚠️ 彻底删除了无差别的“精度擦除”代码，完美保护 Int32 形状推导逻辑！
     # =========================================================================
     if fp16 and builder.platform_has_fast_fp16:
-        print("Enabling FP16 with Strict Mixed Precision Fallback...")
+        print("Enabling FP16 (TRT 10: letting builder choose precisions, no OBEY_PRECISION_CONSTRAINTS)...")
         config.set_flag(trt.BuilderFlag.FP16)
-        
-        # 强制 TensorRT 听从我们指定的节点精度
-        config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
 
-        # 仅针对导致溢出的指数爆炸核心元凶
-        dangerous_keywords = ['Softmax', 'Exp']
-
-        fallback_count = 0
-        dfa_fp16_count = 0  # 新增统计
-        
+        # Hint TRT to pick FP16 for the DeformableAggregation plugin layers (memory-bound,
+        # halves their bandwidth vs FP32). Plain hint, NOT OBEY_PRECISION_CONSTRAINTS —
+        # that flag triggers V2-plugin path that fails on TRT 10.
+        dfa_fp16 = 0
         for i in range(network.num_layers):
             layer = network.get_layer(i)
-            layer_name = layer.name
-            
-            # 1. 危险算子：强制设为 FP32 护体
-            if any(k in layer_name for k in dangerous_keywords):
-                layer.precision = trt.DataType.FLOAT
-                for j in range(layer.num_outputs):
-                    layer.set_output_type(j, trt.DataType.FLOAT)
-                fallback_count += 1
-                
-            # 2. 🎯 耗时大户：强制夺回 FP16 运行权！
-            elif layer.type == trt.LayerType.PLUGIN and 'DeformableAggregation' in layer_name:
+            if layer.type in (trt.LayerType.PLUGIN, trt.LayerType.PLUGIN_V2, trt.LayerType.PLUGIN_V3) \
+                    and 'DeformableAggregation' in layer.name:
                 layer.precision = trt.DataType.HALF
                 for j in range(layer.num_outputs):
                     layer.set_output_type(j, trt.DataType.HALF)
-                dfa_fp16_count += 1
-                
-        print(f"✅ Successfully forced {fallback_count} dangerous layers to FP32.")
-        print(f"🚀 Successfully forced {dfa_fp16_count} DeformableAggregation layers to FP16.")
+                dfa_fp16 += 1
+        print(f"🚀 Hinted FP16 for {dfa_fp16} DeformableAggregation layers.")
     # =========================================================================
 
     # 8. 构建
