@@ -109,6 +109,8 @@ def world_to_bev(x, y):
 
 def draw_box_bev(canvas, box):
     x, y, w, l, yaw, score, cls = box
+    if not all(np.isfinite([x, y, w, l, yaw])):
+        return
     # Rectangle corners in box-local frame
     c, s = np.cos(yaw), np.sin(yaw)
     R = np.array([[c, -s], [s, c]])
@@ -124,6 +126,9 @@ def draw_box_bev(canvas, box):
 
 
 def draw_trajectory(canvas, traj_xy, color=(0, 255, 0), thickness=3):
+    traj_xy = np.asarray(traj_xy, dtype=np.float32)
+    if traj_xy.size == 0 or not np.isfinite(traj_xy).all():
+        return
     pts = np.array([world_to_bev(p[0], p[1]) for p in traj_xy], dtype=np.int32)
     if len(pts) >= 2:
         cv2.polylines(canvas, [pts], isClosed=False, color=color, thickness=thickness)
